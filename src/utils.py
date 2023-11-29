@@ -144,3 +144,6 @@ def split_permutations_t_list(permutations, t_list, num) -> list:
         permutations = permutations[local_m:]
         t_list = t_list[local_m:]
     return res
+
+def reduce_1d_list(iterable) -> Iterator:
+    return chain.from_iterable(iterable)
