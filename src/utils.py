@@ -100,10 +100,10 @@ def eval_simi(x, y, idx, simi_type='ed') -> np.ndarray:
     return simi
 
 
-def eval_svc(new_sv, origin_sv) -> np.ndarray:
-    """Return Shapley value change array
+def eval_ovc(new_ov, origin_ov) -> np.ndarray:
+    """Return Owen value change array
     """
-    return new_sv - origin_sv
+    return new_ov - origin_ov
 
 
 def split_permutation_num(m, num) -> np.ndarray:

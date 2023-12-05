@@ -13,8 +13,11 @@ from .utils import (
     reduce_1d_list,
     eval_utility,
     split_permutation_num,
-    split_permutations_t_list,
+    eval_simi,
+    eval_ovc,
+    get_ele_idxs,
 )
+from .structures import SimiPreData
 
 
 def exact_owen(x_train, y_train, x_test, y_test, model, union_description):
@@ -729,3 +732,546 @@ class DeltaOwen(Owen):
                 delta[idx] += (-current_margin + origin_margin) / n * j
                 origin_margin = current_margin
         return delta
+
+
+class YnOwen(Owen):
+    """YN-NN algorithm for dynamically delete point(s)."""
+
+    def __init__(
+        self, x_train, y_train, x_test, y_test, model, init_ov, union_description
+    ) -> None:
+        super().__init__(
+            x_train, y_train, x_test, y_test, model, init_ov, union_description
+        )
+        self.MAX_DEL_NUM = 2
+        self.del_num = None
+        self.yn = None
+        self.nn = None
+
+    def prepare(self, del_num, flags=None, params=None) -> [np.ndarray, np.ndarray]:
+        """
+        The prepare procedure needed by YN-NN algorithm, which needs
+        to fill in the multi-dimension array.
+
+        :param del_num:        the number of points which need to be deleted
+        :param dict flags:     {'exact': True or False,}
+        :param dict params:    (optional) {'mc_type': 0 or 1, 'm': ...} (it is
+                               needed when 'exact' is False)
+        :return: `yn` and `nn`
+        :rtype: tuple([np.ndarray, np.ndarray]
+        """
+        if flags is None:
+            flags = {"exact": True}
+
+        n = len(self.y_train)
+        self.del_num = del_num
+
+        if self.del_num > self.MAX_DEL_NUM:
+            raise ParamError(
+                "the number of delete points cannot > %d" % self.MAX_DEL_NUM
+            )
+
+        shape = tuple([n]) * (del_num + 2)
+        self.yn = np.zeros(shape=shape)
+        self.nn = np.zeros(shape=shape)
+
+        if flags["exact"]:
+            union_num = len(self.union_description)
+            union_coef = np.zeros(union_num)
+            inner_coefs = []
+            inner_setss = []
+            for i in range(union_num):
+                union_coef[i] = 1 / math.comb(union_num - 1, i)
+                inner_num = len(self.union_description[i])
+                inner_coef = np.zeros(inner_num)
+                for j in range(inner_num):
+                    inner_coef[j] = 1 / math.comb(inner_num - 1, j)
+                inner_coefs.append(inner_coef)
+                inner_coalition = self.union_description[i]
+                inner_sets = list(power_set(inner_coalition))
+                inner_setss.append(inner_sets)
+            union_coalition = np.arange(union_num)
+            union_coalition_set = set(union_coalition)
+            union_sets = list(power_set(union_coalition))
+            for union_sets_idx in trange(len(union_sets)):
+                union_set = union_sets[union_sets_idx]
+                data_idx = list(reduce_1d_list(self.union_description[union_set]))
+                x_temp = self.x_train[data_idx]
+                y_temp = self.y_train[data_idx]
+                for inner_idx in union_coalition_set - set(union_sets[union_sets_idx]):
+                    for inner_set in inner_setss[inner_idx]:
+                        x_tt = deepcopy(x_temp)
+                        y_tt = deepcopy(y_temp)
+                        for inner_set_idx in inner_set:
+                            x_tt.append(self.x_train[inner_set_idx])
+                            y_tt.append(self.y_train[inner_set_idx])
+                        u = eval_utility(
+                            x_tt, y_tt, self.x_test, self.y_test, self.model
+                        )
+
+                        # Assign utility to array
+                        l = len(inner_set)
+                        Y = list(inner_set)
+                        N = list(set(self.union_description[inner_idx]) - set(Y))
+
+                        if self.del_num == 1:
+                            for j, k in product(Y, N):
+                                self.yn[j, k, l] += (
+                                    union_coef[len(union_set)]
+                                    * inner_coefs[inner_idx][len(inner_set) - 1]
+                                    * u
+                                    / len(self.union_description[inner_idx])
+                                    / union_num
+                                )
+                            for j, k in product(N, N):
+                                self.nn[j, k, l] += (
+                                    union_coef[len(union_set)]
+                                    * inner_coefs[inner_idx][len(inner_set)]
+                                    * u
+                                    / len(self.union_description[inner_idx])
+                                    / union_num
+                                )
+                        else:
+                            for j, k, p in product(Y, N, N):
+                                self.yn[j, k, p, l] += (
+                                    union_coef[len(union_set)]
+                                    * inner_coefs[inner_idx][len(inner_set) - 1]
+                                    * u
+                                    / len(self.union_description[inner_idx])
+                                    / union_num
+                                )
+                            for j, k, p in product(N, N, N):
+                                self.nn[j, k, p, l] += (
+                                    union_coef[len(union_set)]
+                                    * inner_coefs[inner_idx][len(inner_set)]
+                                    * u
+                                    / len(self.union_description[inner_idx])
+                                    / union_num
+                                )
+
+        else:
+            mc_type = params["mc_type"]
+            m = params["m"]
+
+            union_num = len(self.union_description)
+            union_idxs = np.arange(union_num)
+            for _ in trange(int(n * m)):
+                np.random.shuffle(union_idxs)
+                idxs = []
+                for i in union_idxs:
+                    inner_idxs = np.asarray(self.union_description[i])
+                    np.random.shuffle(inner_idxs)
+                    idxs.append(inner_idxs)
+                idxs = list(reduce_1d_list(idxs))
+                old_u = 0
+                for l in range(1, n + 1):
+                    temp_x, temp_y = (self.x_train[idxs[:l]], self.y_train[idxs[:l]])
+                    temp_u = eval_utility(
+                        temp_x, temp_y, self.x_test, self.y_test, self.model
+                    )
+
+                    # Assign utility to array
+                    N = idxs[l:]
+                    if mc_type == 0:
+                        j = idxs[l - 1]
+                        if self.del_num == 1:
+                            for k in N:
+                                self.yn[j, k, l] += temp_u
+                                self.nn[j, k, l - 1] += old_u
+                        else:
+                            for k, p in product(N, N):
+                                self.yn[j, k, p, l] += temp_u
+                                self.nn[j, k, p, l - 1] += old_u
+                    else:
+                        Y = idxs[:l]
+                        if self.del_num == 1:
+                            for j, k in product(Y, N):
+                                self.yn[j, k, l] += temp_u
+                            for j, k in product(N, N):
+                                self.nn[j, k, l] += temp_u
+                        else:
+                            for j, k, p in product(Y, N, N):
+                                self.yn[j, k, p, l] += temp_u
+                            for j, k, p in product(N, N, N):
+                                self.nn[j, k, p, l] += temp_u
+
+                    old_u = temp_u
+
+            self.yn, self.nn = self.yn / m, self.nn / m
+
+        return self.yn, self.nn
+
+    def del_single_point(self, del_point_idx, flags=None, params=None) -> np.ndarray:
+        """
+        Delete a single point and update the Owen value with
+        YN-NN algorithm.
+
+        :param int del_point_idx:    the index of the deleting point
+        :param dict flags:           {'exact': True or False}
+        :param dict params:          (unused yet)
+        :return: Owen value array `yn_ov`
+        :rtype: numpy.ndarray
+        """
+
+        if flags is None:
+            flags = {"exact": True}
+
+        return self.del_multi_points([del_point_idx], flags, params)
+
+    def del_multi_points(self, del_points_idx, flags=None, params=None) -> np.ndarray:
+        """
+        Delete multiple points and update the Owen value with
+        YN-NN (YNN-NNN) algorithm. (KNN & KNN+)
+
+        :param list del_points_idx:  the index of the deleting points
+        :param dict flags:           {'exact': True or False}
+        :param dict params:          (unused yet)
+        :return: Owen value array `yn_ov`
+        :rtype: numpy.ndarray
+        """
+
+        if flags is None:
+            flags = {"exact": True}
+
+        if len(del_points_idx) > self.del_num:
+            raise ParamError("delete too many points")
+
+        n = len(self.y_train)
+        yn_ov = np.zeros(n)
+        walk_arr = np.delete(np.arange(n), np.asarray(del_points_idx))
+
+        for i, j in product(walk_arr, range(1, 1 + len(walk_arr))):
+            t = tuple(del_points_idx[: self.del_num])
+            if not flags["exact"] and params["mc_type"] == 0:
+                modi_coef_method = 0
+            else:
+                modi_coef_method = 1
+            yn_ov[i] += (
+                self.yn[(i,) + t + (j,)] - self.nn[(i,) + t + (j - 1,)]
+            ) * YnOwen._modi_coef(n, j, self.del_num, modi_coef_method)
+        return np.delete(yn_ov, del_points_idx)
+
+    @staticmethod
+    def _modi_coef(n, j, num, method):
+        res = 1
+        for i in range(num):
+            if method == 0:
+                res *= n - 1 - i
+            else:
+                res *= n - i
+            res /= n - j - i
+        return res
+
+
+class HeurOwen(Owen):
+    """Heuristic dynamic Owen algorithm, including KNN and KNN+ version"""
+
+    def __init__(
+        self,
+        x_train,
+        y_train,
+        x_test,
+        y_test,
+        model,
+        init_ov,
+        union_description,
+        flags=None,
+        params=None,
+    ) -> None:
+        """
+        :param flags: unused yet
+        :param params: {'method': 'knn' or 'knn+'}
+        """
+        super().__init__(
+            x_train, y_train, x_test, y_test, model, init_ov, union_description
+        )
+
+        if params is None:
+            params = {"method": "knn"}
+
+        # Extract param
+        self.method = params["method"]
+
+        self.n_neighbors = None
+        self.clf = None
+        self.simi_type = None
+        self.m = None
+        self.spd = None
+
+    def prepare(self, flags=None, params=None) -> None:
+        """
+        The prepare procedure needed by heuristic algorithm, including
+        KNN clf training, curve functions generating and etc.
+
+        :param dict flags:  {'exact': True or False,
+                             'train': True or False}
+        :param dict params: {'n_neighbors': 5,
+                             'simi_type': 'ed' or 'cos',
+                             'f_shap': 'n*n',
+                             'rela': ['poly', 2],
+                             'train_idxs': []}
+                             (['poly', x] | x in [1, ..., N],
+                             in default x is 2)
+        :return: None
+        :rtype: None
+        """
+
+        if flags is None:
+            flags = {"exact": False, "train": True}
+
+        # Extract param & flags
+        self.n_neighbors = params["n_neighbors"]
+
+        self.clf = neighbors.NearestNeighbors(n_neighbors=self.n_neighbors).fit(
+            self.x_train, self.y_train
+        )
+        if self.method == "knn+":
+            # Curve fitting
+            flag_train = flags["train"]
+            self.simi_type = params["simi_type"]
+
+            n = len(self.y_train)
+
+            if not flag_train:
+                self.spd = SimiPreData(params)
+            else:
+                flag_ext = flags["exact"]
+                train_idxs = params["train_idxs"]
+                if not flag_ext:
+                    self.m = params["m"]
+
+                ovs = np.zeros((len(train_idxs), len(self.y_train) - 1))
+
+                for i, train_idx in enumerate(train_idxs):
+                    idxs = np.delete(np.arange(n), train_idx)
+                    if flag_ext:
+                        ovs[i] = exact_owen(
+                            self.x_train[idxs],
+                            self.y_train[idxs],
+                            self.x_test,
+                            self.y_test,
+                            self.model,
+                            self.union_description,
+                        )
+                    else:
+                        ovs[i] = mc_owen(
+                            self.x_train[idxs],
+                            self.y_train[idxs],
+                            self.x_test,
+                            self.y_test,
+                            self.model,
+                            self.union_description,
+                            self.m,
+                        )
+                # Fill in SimiPreData
+                self.spd = SimiPreData({"train_idxs": train_idxs, "train_ovs": ovs})
+
+            self._fit_curve(params)
+
+    def add_single_point(
+        self, add_point_x, add_point_y, add_point_union, flags=None, params=None
+    ) -> np.ndarray:
+        """
+        Add a single point and update the Owen value with
+        heuristic algorithm. (KNN & KNN+)
+
+        :param np.ndarray add_point_x:  the features of the adding point
+        :param np.ndarray add_point_y:  the label of the adding point
+        :param dict flags:              (unused yet)
+        :param dict params:             (unused yet)
+        :return: Owen value array `knn_ov` or `knn_plus_ov`
+        :rtype: numpy.ndarray
+        """
+        return self.add_multi_points(
+            np.asarray([add_point_x]),
+            np.asarray([add_point_y]),
+            np.asarray([add_point_union]),
+            flags,
+            params,
+        )
+
+    def add_multi_points(
+        self, add_points_x, add_points_y, add_points_union, flags=None, params=None
+    ) -> np.ndarray:
+        """
+        Add multiple points and update the Owen value with
+        heuristic algorithm. (KNN & KNN+)
+
+        :param np.ndarray add_points_x:  the features of the adding points
+        :param np.ndarray add_points_y:  the labels of the adding points
+        :param dict flags:               (unused yet)
+        :param dict params:              (unused yet)
+        :return: Owen value array `knn_ov` or `knn_plus_ov`
+        :rtype: numpy.ndarray
+        """
+        self.add_points_x = add_points_x
+        self.add_points_y = add_points_y
+        self.add_points_union = add_points_union
+
+        n = len(self.init_ov)
+        add_num = len(add_points_y)
+        knn_ov = np.append(self.init_ov, [0] * add_num)
+
+        for i in range(add_num):
+            x = add_points_x[i]
+            neighbor_list = self.clf.kneighbors([x], self.n_neighbors, False)[0]
+            nov = np.sum(self.init_ov[neighbor_list]) / self.n_neighbors
+            knn_ov[i + n] = nov
+        if self.method == "knn":
+            return knn_ov
+        else:
+            # KNN+
+            knn_plus_ov = knn_ov
+
+            simi_type = self.simi_type
+            ovc = np.zeros(n)
+
+            for r_idx in trange(add_num):
+                x_train = np.append(self.x_train, [add_points_x[r_idx]], axis=0)
+                y_train = np.append(self.y_train, add_points_y[r_idx])
+                # Always add one point
+                simi = eval_simi(x_train, y_train, n, simi_type)
+                # Calculate ovc with curve functions
+                for i in range(n):
+                    # Select the corresponding curve function
+                    f = np.poly1d(
+                        self.curve_funcs[
+                            list(self.f_labels).index(add_points_y[r_idx])
+                        ][list(self.all_labels).index(self.y_train[i])]
+                    )
+                    ovc[i] += -f(simi[i]) if simi[i] != 0 else 0
+
+            added_x_train = np.append(self.x_train, add_points_x, axis=0)
+            added_y_train = np.append(self.y_train, add_points_y)
+
+            new_u = eval_utility(
+                added_x_train, added_y_train, self.x_test, self.y_test, self.model
+            )
+            knn_plus_ov[:n] += ovc
+            knn_plus_ov *= new_u / np.sum(knn_plus_ov)
+            return knn_plus_ov
+
+    def del_single_point(self, del_point_idx, flags=None, params=None) -> np.ndarray:
+        """
+        Delete a single point and update the Owen value with
+        heuristic algorithm. (KNN & KNN+)
+
+        :param int del_point_idx:  the index of the deleting point
+        :param dict flags:         (unused yet)
+        :param dict params:        (unused yet)
+        :return: Owen value array `knn_ov` or `knn_plus_ov`
+        :rtype: numpy.ndarray
+        """
+        return self.del_multi_points([del_point_idx], flags, params)
+
+    def del_multi_points(self, del_points_idx, flags=None, params=None) -> np.ndarray:
+        """
+        Delete multiple points and update the Owen value with
+        heuristic algorithm. (KNN & KNN+)
+
+        :param list del_points_idx:  the index of the deleteing points
+        :param dict flags:           (unused yet)
+        :param dict params:          (unused yet)
+        :return: Owen value array `knn_ov` or `knn_plus_ov`
+        :rtype: numpy.ndarray
+        """
+        self.del_points_idx = del_points_idx
+        n = len(self.init_ov)
+
+        knn_ov = np.delete(self.init_ov, del_points_idx)
+
+        idxs = np.arange(n)
+        deleted_idxs = np.delete(idxs, del_points_idx)
+        deleted_x_train = self.x_train[deleted_idxs]
+        deleted_y_train = self.y_train[deleted_idxs]
+        # Update clf
+        clf = neighbors.NearestNeighbors(n_neighbors=self.n_neighbors).fit(
+            deleted_x_train, deleted_y_train
+        )
+        for i in del_points_idx:
+            x = self.x_train[i]
+            neighbor_list = clf.kneighbors([x], self.n_neighbors, False)[0]
+            for k in neighbor_list:
+                idx = deleted_idxs[k]
+                knn_ov[k] += self.init_ov[idx] / self.n_neighbors
+        if self.method == "knn":
+            return knn_ov
+        else:
+            # KNN+
+            knn_plus_ov = knn_ov
+            simi_type = self.simi_type
+
+            ovc = np.zeros(n)
+
+            f_labels = list(self.f_labels)
+            all_labels = list(self.all_labels)
+            for idx in tqdm(del_points_idx):
+                simi = eval_simi(self.x_train, self.y_train, idx, simi_type)
+                # Calculate ovc with curve functions
+                for i in range(n):
+                    # Select the corresponding curve function
+                    f = np.poly1d(
+                        self.curve_funcs[f_labels.index(self.y_train[idx])][
+                            all_labels.index(self.y_train[i])
+                        ]
+                    )
+                    ovc[i] += f(simi[i]) if simi[i] != 0 else 0
+
+                new_u = eval_utility(
+                    deleted_x_train,
+                    deleted_y_train,
+                    self.x_test,
+                    self.y_test,
+                    self.model,
+                )
+                knn_plus_ov += ovc[deleted_idxs]
+                knn_plus_ov *= new_u / np.sum(knn_plus_ov)
+            return knn_plus_ov
+
+    def _fit_curve(self, params=None) -> None:
+        """
+        Generate curve functions which represent the relationship between
+        the change of Owen value and the similarity.
+        """
+
+        if params is None:
+            params = {"f_shap": "n*n", "rela": ["poly", 2], "simi_type": "ed"}
+
+        # Extract params
+        f_shap = params["f_shap"]
+        rela = params["rela"]
+        simi_type = params["simi_type"]
+
+        self.f_labels = set(self.y_train[self.spd.train_idxs])
+        self.all_labels = set(self.y_train)
+
+        if rela[0] == "poly":
+            curve_funcs = np.zeros(
+                (len(self.all_labels), len(self.f_labels), rela[1] + 1)
+            )
+        else:
+            raise ParamError("relationship excepting 'ploy' " "is NOT supported yet")
+
+        if f_shap == "n*n":
+            for _, train_idx in product(self.f_labels, self.spd.train_idxs):
+                current_label_fidx = list(self.f_labels).index(self.y_train[train_idx])
+                for idx, k in enumerate(self.all_labels):
+                    label_idxs = get_ele_idxs(k, self.y_train)
+                    try:
+                        label_idxs.remove(train_idx)
+                    except ValueError:
+                        pass
+                    simi = eval_simi(self.x_train, self.y_train, train_idx, simi_type)
+                    # Include the train idx point, del when check same
+                    ovs_idx = self.spd.train_idxs.index(train_idx)
+                    origin_ov = np.delete(self.init_ov, train_idx)
+                    ovc = eval_ovc(self.spd.ovs[ovs_idx], origin_ov)
+                    ovc = np.insert(ovc, train_idx, 0)
+
+                    if rela[0] == "poly":
+                        x = simi[np.where(simi != 0)]
+                        y = ovc[np.where(simi != 0)]
+                        z = np.polyfit(x, y, rela[1])
+                        p = np.poly1d(z)
+                        curve_funcs[current_label_fidx, idx] = p
+        self.curve_funcs = curve_funcs
