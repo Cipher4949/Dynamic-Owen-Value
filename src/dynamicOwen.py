@@ -54,16 +54,19 @@ def exact_owen(x_train, y_train, x_test, y_test, model, union_description):
     union_sets = list(power_set(union_coalition))
     for union_sets_idx in trange(len(union_sets)):
         union_set = union_sets[union_sets_idx]
-        data_idx = list(reduce_1d_list(union_description[union_set]))
+        to_reduce = []
+        for i in union_set:
+            to_reduce.append(union_description[i])
+        data_idx = list(reduce_1d_list(to_reduce))
         x_temp = x_train[data_idx]
         y_temp = y_train[data_idx]
-        for inner_idx in union_coalition_set - set(union_sets[union_sets_idx]):
+        for inner_idx in union_coalition_set - set(union_set):
             for inner_set in inner_setss[inner_idx]:
                 x_tt = deepcopy(x_temp)
                 y_tt = deepcopy(y_temp)
                 for inner_set_idx in inner_set:
-                    x_tt.append(x_train[inner_set_idx])
-                    y_tt.append(y_train[inner_set_idx])
+                    x_tt = np.append(x_tt, x_train[inner_set_idx])
+                    y_tt = np.append(y_tt, y_train[inner_set_idx])
                 u = eval_utility(x_tt, y_tt, x_test, y_test, model)
                 for i in inner_set:
                     exact_ov[i] += (
@@ -137,7 +140,14 @@ def mc_owen(
 
 
 def _mc_owen_sub_task(
-    x_train, y_train, x_test, y_test, model, union_description, flag_abs, local_m
+    x_train,
+    y_train,
+    x_test,
+    y_test,
+    model,
+    union_description,
+    flag_abs,
+    local_m,
 ) -> np.ndarray:
     local_state = np.random.RandomState(None)
 
@@ -154,7 +164,8 @@ def _mc_owen_sub_task(
             idxs.append(inner_idxs)
         idxs = list(reduce_1d_list(idxs))
         old_u = 0
-        for j in range(1, n + 1):
+        real_n = len(idxs)
+        for j in range(1, real_n + 1):
             temp_x, temp_y = x_train[idxs[:j]], y_train[idxs[:j]]
             temp_u = eval_utility(temp_x, temp_y, x_test, y_test, model)
             contribution = (temp_u - old_u) if not flag_abs else abs(temp_u - old_u)
@@ -412,7 +423,7 @@ class PivotOwen(Owen):
         new_x_train = np.append(self.x_train, [add_point_x], axis=0)
         new_y_train = np.append(self.y_train, add_point_y)
         new_union_description = deepcopy(self.union_description)
-        new_union_description[add_point_union].append(len(new_y_train))
+        new_union_description[add_point_union].append(len(new_y_train) - 1)
 
         # Init left part and right part
         lov = np.append(self.lov, 0)
@@ -542,9 +553,6 @@ class DeltaOwen(Owen):
 
         flag_update = flags["flag_update"]
 
-        new_union_description = deepcopy(self.union_description)
-        new_union_description[add_point_union].append(len(self.y_train) + 1)
-
         # assign the permutation of each process
         args = split_permutation_num(m, proc_num)
         pool = Pool()
@@ -557,7 +565,7 @@ class DeltaOwen(Owen):
             self.model,
             add_point_x,
             add_point_y,
-            new_union_description,
+            self.union_description,
         )
         ret = pool.map(func, args)
         pool.close()
@@ -795,16 +803,19 @@ class YnOwen(Owen):
             union_sets = list(power_set(union_coalition))
             for union_sets_idx in trange(len(union_sets)):
                 union_set = union_sets[union_sets_idx]
-                data_idx = list(reduce_1d_list(self.union_description[union_set]))
+                to_reduce = []
+                for i in union_set:
+                    to_reduce.append(self.union_description[i])
+                data_idx = list(reduce_1d_list(to_reduce))
                 x_temp = self.x_train[data_idx]
                 y_temp = self.y_train[data_idx]
-                for inner_idx in union_coalition_set - set(union_sets[union_sets_idx]):
+                for inner_idx in union_coalition_set - set(union_set):
                     for inner_set in inner_setss[inner_idx]:
                         x_tt = deepcopy(x_temp)
                         y_tt = deepcopy(y_temp)
                         for inner_set_idx in inner_set:
-                            x_tt.append(self.x_train[inner_set_idx])
-                            y_tt.append(self.y_train[inner_set_idx])
+                            x_tt = np.append(x_tt, self.x_train[inner_set_idx])
+                            y_tt = np.append(y_tt, self.y_train[inner_set_idx])
                         u = eval_utility(
                             x_tt, y_tt, self.x_test, self.y_test, self.model
                         )
@@ -1043,26 +1054,31 @@ class HeurOwen(Owen):
                 ovs = np.zeros((len(train_idxs), len(self.y_train) - 1))
 
                 for i, train_idx in enumerate(train_idxs):
-                    idxs = np.delete(np.arange(n), train_idx)
+                    new_union_d = deepcopy(self.union_description)
+                    for _ in new_union_d:
+                        if train_idx in _:
+                            _.remove(train_idx)
                     if flag_ext:
-                        ovs[i] = exact_owen(
-                            self.x_train[idxs],
-                            self.y_train[idxs],
+                        ret = exact_owen(
+                            self.x_train,
+                            self.y_train,
                             self.x_test,
                             self.y_test,
                             self.model,
-                            self.union_description,
+                            new_union_d,
                         )
+                        ovs[i] = np.delete(ret, train_idx)
                     else:
-                        ovs[i] = mc_owen(
-                            self.x_train[idxs],
-                            self.y_train[idxs],
+                        ret = mc_owen(
+                            self.x_train,
+                            self.y_train,
                             self.x_test,
                             self.y_test,
                             self.model,
-                            self.union_description,
+                            new_union_d,
                             self.m,
                         )
+                        ovs[i] = np.delete(ret, train_idx)
                 # Fill in SimiPreData
                 self.spd = SimiPreData({"train_idxs": train_idxs, "train_ovs": ovs})
 

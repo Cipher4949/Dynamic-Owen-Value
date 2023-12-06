@@ -12,7 +12,6 @@ Data structures that power DynaShap.
 
 
 class SimiPreData(object):
-
     def __init__(self, params) -> None:
-        self.train_idxs = params['train_idxs']
-        self.svs = params['train_svs']
+        self.train_idxs = params["train_idxs"]
+        self.ovs = params["train_ovs"]

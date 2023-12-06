@@ -52,7 +52,7 @@ class TestApi(object):
             self.X[:2], self.y[:2], [2, 3], params={"method": "lavg"}
         )
         assert len(ov) == len(self.init_ov) + 2
-    
+
     def test_delta_owen(self):
         delta_owen = DeltaOwen(
             self.X, self.y, self.X, self.y, self.model, self.init_ov, self.union_d
@@ -68,7 +68,7 @@ class TestApi(object):
         ov = pivot_owen.add_single_point(
             self.X[0],
             self.y[0],
-            [2, 3],
+            3,
             proc_num=1,
             params=None,
             flags={"flag_lov": True},
@@ -106,7 +106,7 @@ class TestApi(object):
             params={
                 "n_neighbors": 3,
                 "simi_type": "ed",
-                "f_owen": "n*n",
+                "f_shap": "n*n",
                 "rela": ["poly", 2],
                 "train_idxs": [3, 11],
                 "m": 10,
@@ -130,7 +130,7 @@ class TestApi(object):
             self.y,
             self.model,
             self.init_ov[:2],
-            self.union_d,
+            [[0], [1]],
         )
         yn_owen.prepare(1, flags={"exact": True})
         ov = yn_owen.del_single_point(0)
